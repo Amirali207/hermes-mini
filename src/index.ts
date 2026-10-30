@@ -772,6 +772,23 @@ async function taskReminders(env: Env): Promise<void> {
   }
 }
 
+async function claimUpdate(env: Env, id: unknown): Promise<boolean> {
+  if (typeof id !== 'number') return true;
+  try {
+    const r = await env.DB.prepare('INSERT OR IGNORE INTO state (k, v) VALUES (?, ?)')
+      .bind(`upd:${id}`, String(Date.now()))
+      .run();
+    if (r.meta.changes === 0) return false;
+    await env.DB.prepare("DELETE FROM state WHERE k LIKE 'upd:%' AND CAST(v AS INTEGER) < ?")
+      .bind(Date.now() - 24 * 60 * 60 * 1000)
+      .run();
+    return true;
+  } catch (e) {
+    console.error('claim failed', e);
+    return true;
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -785,11 +802,15 @@ export default {
       return new Response('forbidden\n', { status: 403 });
     }
     try {
-      const update: unknown = await req.json();
-      await handleUpdate(
-        env,
-        update as { message?: { chat: { id: number }; from?: { id: number }; text?: string } },
-      );
+      const update = (await req.json()) as {
+        update_id?: number;
+        message?: { chat: { id: number }; from?: { id: number }; text?: string };
+      };
+      if (!(await claimUpdate(env, update.update_id))) {
+        console.log('duplicate update ignored', update.update_id);
+        return new Response('ok\n');
+      }
+      await handleUpdate(env, update);
     } catch (e) {
       console.error('update failed', e);
     }
