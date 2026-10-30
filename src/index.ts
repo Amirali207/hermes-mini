@@ -28,7 +28,7 @@ interface NewTask {
 }
 
 interface AiAction {
-  action: 'add' | 'done' | 'undone' | 'list' | 'search' | 'settime' | 'chat';
+  action: 'add' | 'done' | 'undone' | 'list' | 'search' | 'settime' | 'del' | 'delall'| 'chat';
   text?: string;
   tasks?: NewTask[];
   numbers?: number[];
@@ -44,25 +44,7 @@ interface Pending {
 
 type TimeAnswer = { kind: 'time'; time: string } | { kind: 'skip' };
 
-const HELP = `🤖 hermes-mini — دستیار کار روزانه
 
-/add متن — اضافه کردن کار برای امروز (بعدش ساعتش را می‌پرسم)
-/today — لیست کارهای امروز
-/done شماره — تیک زدن
-/undone شماره — برداشتن تیک
-/del شماره — حذف کردن
-/time شماره ساعت — تعیین یا تغییر ساعت (مثلاً /time 2 ۸ شب)
-/search متن — جستجو در همهٔ کارها (امروز و روزهای قبل)
-
-⏰ هر کار ساعت‌دار سر وقتش یادآوری می‌شود (اگر تا آن موقع تیک نخورده باشد).
-
-متن آزاد هم بفرست — خودم می‌فهمم چی می‌خوای.
-مثلاً:
-• «جلسه ساعت ۵ عصر»  (با ساعت اضافه می‌شود)
-• «خرید نان و شیر»  (دو کار اضافه می‌شود و ساعتشان را می‌پرسم)
-• «نان رو خریدم»  (تیک می‌خورد)
-• «دنبال کار دکتر بگرد»
-• «امروز چند شنبه‌ست؟»`;
 
 const AI_PROMPT = `تو «هرمس‌مینی» هستی، دستیار کارهای روزانهٔ یک کاربر فارسی‌زبان. پیام کاربر را بخوان و تصمیم بگیر چه می‌خواهد.
 فقط و فقط یک JSON معتبر برگردان. هیچ متن، توضیح، کد‌بلاک یا چیز دیگری قبل یا بعد از JSON ننویس.
@@ -79,6 +61,11 @@ const AI_PROMPT = `تو «هرمس‌مینی» هستی، دستیار کاره
    {"action":"undone","numbers":[2]}
 4) settime — کاربر ساعت یک کار موجود در لیست را تعیین یا عوض می‌کند.
    {"action":"settime","numbers":[2],"time":"18:30"}
+8) del — کاربر می‌خواهد یک یا چند کار را از لیست امروز حذف کند.
+   {"action":"del","numbers":[3]}
+   شمارهٔ درست را از «لیست کارهای امروز» بردار. اگر شماره‌ای گفت که در لیست نیست، همان عدد را بنویس
+9) delall — کاربر می‌خواهد همهٔ کارهای امروز را حذف کند.
+   {"action":"delall"}
 5) list — کاربر می‌خواهد لیست امروز را ببیند.
    {"action":"list"}
 6) search — کاربر دنبال کاری در همهٔ روزها می‌گردد.
@@ -87,10 +74,12 @@ const AI_PROMPT = `تو «هرمس‌مینی» هستی، دستیار کاره
    {"action":"chat","reply":"جواب کوتاه، محترمانه و فارسی"}
    برای پرسش دربارهٔ کارها از «لیست کارهای امروز» و برای تاریخ از «تاریخ امروز» جواب بده و چیزی از خودت اضافه نکن.
 
+
 قوانین:
 - جمله‌ای که کاری برای انجام دادن است (مثل «خرید نان» یا «برم دکتر») یعنی add.
 - جمله‌ای که انجام شدن کاری را می‌گوید (مثل «تموم شد»، «انجام دادم»، «خریدم») یعنی done.
 - سؤال، سلام و گپ یعنی chat.
+- برای ادامهٔ گفتگو از پیام‌های قبلی همین مکالمه کمک بگیر.
 
 مثال‌ها (فرض کن لیست امروز این است: 1. ⬜ خرید نان  2. ⬜ زنگ به مامان  3. ✅ مطالعه):
 «نان رو خریدم» ← {"action":"done","numbers":[1]}
@@ -102,11 +91,20 @@ const AI_PROMPT = `تو «هرمس‌مینی» هستی، دستیار کاره
 «امروز چی دارم؟» ← {"action":"list"}
 «دنبال کار نان بگرد» ← {"action":"search","query":"نان"}
 «چند تا کار مونده؟» ← {"action":"chat","reply":"۲ کار از ۳ کار هنوز مونده."}
+«شماره ۳ رو حذف کن» ← {"action":"del","numbers":[3]}
+«زنگ مامان رو پاک کن» ← {"action":"del","numbers":[2]}
+«همه رو پاک کن» ← {"action":"delall"}
+«/start» ← {"action":"chat","reply":"سلام! 👋 کارهات رو بگو، من یادداشت می‌کنم. مثلاً «خرید نان» یا «جلسه ساعت ۵ عصر»."}
 «سلام» ← {"action":"chat","reply":"سلام! 👋 چه کاری اضافه کنم؟"}`;
 
 const SEARCH_LIMIT = 20;
+const HISTORY_TURNS = 6;
+const HISTORY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const HISTORY_KEEP = 20;
 const MAX_ADD_AT_ONCE = 10;
 const PENDING_KEY = 'pending_time';
+const CONFIRM_KEY = 'pending_delete';
+const CONFIRM_TTL_MS = 5 * 60 * 1000;
 const PENDING_TTL_MS = 30 * 60 * 1000;
 
 // ---------- تاریخ و ساعت ----------
@@ -350,6 +348,43 @@ async function clearPending(env: Env): Promise<void> {
   await env.DB.prepare('DELETE FROM state WHERE k = ?').bind(PENDING_KEY).run();
 }
 
+async function getConfirmDelete(env: Env): Promise<Pending | null> {
+  try {
+    const row = await env.DB.prepare('SELECT v FROM state WHERE k = ?').bind(CONFIRM_KEY).first<{ v: string }>();
+    if (!row) return null;
+    const p = JSON.parse(row.v) as Pending;
+    if (!Array.isArray(p.ids) || !p.ids.length || Date.now() - p.at > CONFIRM_TTL_MS) {
+      await clearConfirmDelete(env);
+      return null;
+    }
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+async function setConfirmDelete(env: Env, ids: number[]): Promise<void> {
+  const value = JSON.stringify({ ids: ids.slice(0, 50), at: Date.now() } satisfies Pending);
+  await env.DB.prepare('INSERT OR REPLACE INTO state (k, v) VALUES (?, ?)').bind(CONFIRM_KEY, value).run();
+}
+
+async function clearConfirmDelete(env: Env): Promise<void> {
+  await env.DB.prepare('DELETE FROM state WHERE k = ?').bind(CONFIRM_KEY).run();
+}
+
+function parseYesNo(raw: string): 'yes' | 'no' | null {
+  const s = raw.replace(/\u200c/g, ' ').trim();
+  if (/^(بله|آره|اره|تایید|تأیید|حتما|حتماً|باشه|yes|y)([\s.!،]|$)/i.test(s)) return 'yes';
+  if (/^(نه|نخیر|خیر|لغو|بیخیال|نکن|منصرف|no|n)([\s.!،]|$)/i.test(s)) return 'no';
+  return null;
+}
+
+async function askConfirmDelete(env: Env, chatId: number, targets: Task[]): Promise<void> {
+  await setConfirmDelete(env, targets.map((t) => t.id));
+  const lines = targets.slice(0, 15).map((t) => `• ${t.text}`).join('\n');
+  await send(env, chatId, `⚠️ ${targets.length} کار حذف بشه؟\n${lines}\n\nبنویس «بله» تا حذف بشه، یا «نه» برای لغو.`);
+}
+
 function timeQuestion(text: string): string {
   return `⏰ «${text}» ساعتش چنده؟\n(مثلاً 14:30 یا «۸ شب». اگه ساعت نداره بنویس «بی‌ساعت»)`;
 }
@@ -449,8 +484,38 @@ function cleanNumbers(v: unknown): number[] {
   return v.map((x) => Number(x)).filter((x) => Number.isInteger(x) && x >= 1);
 }
 
+type ChatMsg = { role: 'user' | 'assistant'; content: string };
+
+async function loadHistory(env: Env): Promise<ChatMsg[]> {
+  try {
+    const { results } = await env.DB.prepare(
+      'SELECT role, content FROM messages WHERE created_at > ? ORDER BY id DESC LIMIT ?',
+    )
+      .bind(Date.now() - HISTORY_MAX_AGE_MS, HISTORY_TURNS)
+      .all<ChatMsg>();
+    return (results ?? [])
+    .reverse()
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .map((m) => ({ role: m.role, content: m.content }));
+  } catch {
+    return [];
+  }
+}
+
+async function saveTurn(env: Env, user: string, reply: string): Promise<void> {
+  try {
+    const now = Date.now();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO messages (role, content, created_at) VALUES (?, ?, ?)').bind('user', user.slice(0, 300), now),
+      env.DB.prepare('INSERT INTO messages (role, content, created_at) VALUES (?, ?, ?)').bind('assistant', reply.slice(0, 300), now),
+      env.DB.prepare(`DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT ${HISTORY_KEEP})`),
+    ]);
+  } catch (e) {
+    console.error('save history failed', e);
+  }
+}
 // اگر مشکلی پیش بیاید null برمی‌گرداند (و پیام را به‌اشتباه «کار جدید» ثبت نمی‌کنیم)
-async function aiParse(env: Env, text: string, tasks: Task[]): Promise<AiAction | null> {
+async function aiParse(env: Env, text: string, tasks: Task[], history: ChatMsg[]): Promise<AiAction | null> {
   try {
     const list = tasks.length ? tasks.map(taskLine).join('\n') : '(خالی)';
     const system = `${AI_PROMPT}\n\nتاریخ امروز: ${faDateLong(tehranDay())}\nلیست کارهای امروز:\n${list}`;
@@ -458,7 +523,7 @@ async function aiParse(env: Env, text: string, tasks: Task[]): Promise<AiAction 
     const noThink = /qwen3/i.test(env.AI_MODEL) ? ' /no_think' : '';
     const res = await env.AI.run(env.AI_MODEL, {
       messages: [
-        { role: 'system', content: system },
+        { role: 'system', content: system }, ...history,
         { role: 'user', content: `${text}${noThink}` },
       ],
       max_tokens: 500,
@@ -471,7 +536,7 @@ async function aiParse(env: Env, text: string, tasks: Task[]): Promise<AiAction 
     if (!match) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = JSON.parse(match[0]) as any;
-    if (!['add', 'done', 'undone', 'list', 'search', 'settime', 'chat'].includes(p?.action)) return null;
+    if (!['add', 'done', 'undone', 'list', 'search', 'settime', 'del', 'delall', 'chat'].includes(p?.action)) return null;
 
     const act: AiAction = { action: p.action };
     if (typeof p.text === 'string') act.text = p.text;
@@ -492,6 +557,7 @@ async function aiParse(env: Env, text: string, tasks: Task[]): Promise<AiAction 
 async function handleUpdate(env: Env, update: { message?: { chat: { id: number }; from?: { id: number }; text?: string } }): Promise<void> {
   const msg = update.message;
   const text = msg?.text;
+  
   if (!text) return;
   const chatId: number = msg.chat.id;
 
@@ -502,102 +568,45 @@ async function handleUpdate(env: Env, update: { message?: { chat: { id: number }
     return;
   }
   if (String(fromId) !== allowed) return;
-
+  const confirm = await getConfirmDelete(env);
+if (confirm) {
+  const yn = parseYesNo(text);
+  if (yn === 'yes') {
+    await clearConfirmDelete(env);
+    const ph = confirm.ids.map(() => '?').join(',');
+    const { results } = await env.DB.prepare(`SELECT id, text FROM tasks WHERE day = ? AND id IN (${ph})`)
+      .bind(tehranDay(), ...confirm.ids)
+      .all<{ id: number; text: string }>();
+    const rows = results ?? [];
+    if (!rows.length) {
+      await send(env, chatId, 'چیزی برای حذف نمونده.');
+      return;
+    }
+    await env.DB.prepare(`DELETE FROM tasks WHERE id IN (${rows.map(() => '?').join(',')})`)
+      .bind(...rows.map((r) => r.id))
+      .run();
+    await send(env, chatId, `🗑 ${rows.length} کار حذف شد.`);
+    return;
+  }
+  await clearConfirmDelete(env);
+  if (yn === 'no') {
+    await send(env, chatId, 'باشه، چیزی حذف نشد 👌');
+    return;
+  }
+  // پیام نامربوط: درخواست حذف لغو می‌شود و پیام عادی پردازش می‌شود
+}
   // اگر منتظر جواب «ساعتش چنده؟» هستیم
   const pending = await getPending(env);
-  if (pending) {
-    if (text.startsWith('/')) {
-      await clearPending(env);
-    } else if (await answerPending(env, chatId, pending, text)) {
-      return;
-    }
-  }
+  if (pending && (await answerPending(env, chatId, pending, text))) return;
 
-  const cmd = text.match(/^\/(start|help|add|today|list|done|undone|del|search|find|time)(?:\s+([\s\S]*))?$/);
-  if (cmd) {
-    const name = cmd[1];
-    const arg = (cmd[2] ?? '').trim();
-    const day = tehranDay();
-
-    if (name === 'start' || name === 'help') {
-      await send(env, chatId, HELP);
-      return;
-    }
-    if (name === 'add') {
-      if (!arg) {
-        await send(env, chatId, 'استفاده: /add متن کار');
-        return;
-      }
-      const id = await addTask(env, arg);
-      await askTimes(env, chatId, [{ id, text: arg }], `✚ اضافه شد: ${arg}`);
-      return;
-    }
-    if (name === 'search' || name === 'find') {
-      if (!arg) {
-        await send(env, chatId, 'استفاده: /search کلمه\nمثلاً: /search دکتر');
-        return;
-      }
-      const rows = await searchTasks(env, arg);
-      await send(env, chatId, renderSearch(rows, arg));
-      return;
-    }
-    if (name === 'today' || name === 'list') {
-      const tasks = await todayTasks(env, day);
-      await send(env, chatId, tasks.length ? renderList(tasks) : emptyToday('امروز کاری ثبت نشده. با /add اضافه کن.'));
-      return;
-    }
-    if (name === 'time') {
-      const m = toLatinDigits(arg).match(/^(\d+)\s+([\s\S]+)$/);
-      if (!m) {
-        await send(env, chatId, 'استفاده: /time شماره ساعت\nمثلاً: /time 2 14:30\nبرای برداشتن ساعت: /time 2 بی‌ساعت');
-        return;
-      }
-      const n = Number(m[1]);
-      const tasks = await todayTasks(env, day);
-      const task = n >= 1 && n <= tasks.length ? tasks[n - 1] : undefined;
-      if (!task) {
-        await send(env, chatId, `شماره معتبر بده (۱ تا ${tasks.length}).`);
-        return;
-      }
-      const ans = parseTimeAnswer(m[2]);
-      if (!ans) {
-        await send(env, chatId, 'ساعت رو نفهمیدم 🤔 مثلاً: 14:30 یا «۸ شب»');
-        return;
-      }
-      if (ans.kind === 'time') {
-        await setTime(env, task.id, ans.time);
-        await send(env, chatId, `⏰ ساعت ${ans.time} ثبت شد: ${task.text}`);
-      } else {
-        await setTime(env, task.id, null);
-        await send(env, chatId, `👌 ساعت برداشته شد: ${task.text}`);
-      }
-      return;
-    }
-    if (name === 'done' || name === 'undone' || name === 'del') {
-      const n = Number(toLatinDigits(arg));
-      const tasks = await todayTasks(env, day);
-      const task = Number.isInteger(n) && n >= 1 && n <= tasks.length ? tasks[n - 1] : undefined;
-      if (!task) {
-        await send(env, chatId, `شماره معتبر بده (۱ تا ${tasks.length}).`);
-        return;
-      }
-      if (name === 'del') {
-        await env.DB.prepare('DELETE FROM tasks WHERE id = ?').bind(task.id).run();
-        await send(env, chatId, `🗑 حذف شد: ${task.text}`);
-      } else {
-        const done = name === 'done';
-        await setDone(env, task.id, done);
-        await send(env, chatId, `${doneHeader(done)}: ${task.text}`);
-      }
-      return;
-    }
-  }
+  
 
   // ---- متن آزاد: هوش مصنوعی تصمیم می‌گیرد ----
   const tasks = await todayTasks(env, tehranDay());
-  const act = await aiParse(env, text, tasks);
+  const history = await loadHistory(env);
+  const act = await aiParse(env, text, tasks, history);
   if (!act) {
-    await send(env, chatId, 'الان نتونستم پیامت رو بفهمم 😅\nاگه کاره، با /add بفرست. راهنما: /help');
+    await send(env, chatId, 'الان نتونستم پیامت رو بفهمم 😅\nیه جور دیگه بگو، مثلاً «خرید نان».');
     return;
   }
 
@@ -606,7 +615,7 @@ async function handleUpdate(env: Env, update: { message?: { chat: { id: number }
       let items = act.tasks ?? [];
       if (!items.length && act.text?.trim()) items = [{ text: act.text.trim(), time: null }];
       if (!items.length) {
-        await send(env, chatId, 'نفهمیدم چه کاری اضافه کنم. با /add بفرست.');
+        await send(env, chatId, 'نفهمیدم چه کاری اضافه کنم. بمثلاً بگو «خرید نان».');
         break;
       }
       const needTime: { id: number; text: string }[] = [];
@@ -640,7 +649,7 @@ async function handleUpdate(env: Env, update: { message?: { chat: { id: number }
         if (row) targets.push(row);
       }
       if (!targets.length) {
-        await send(env, chatId, 'کاری که می‌گی رو پیدا نکردم. /today بفرست ببین چی داری.');
+        await send(env, chatId, 'کاری که می‌گی رو پیدا نکردم. بگو «چیه کارام» تا لیست رو ببینی');
         break;
       }
       const pendingTasks = targets.filter((t) => Boolean(t.done) !== done);
@@ -659,7 +668,7 @@ async function handleUpdate(env: Env, update: { message?: { chat: { id: number }
         if (t && !targets.some((x) => x.id === t.id)) targets.push(t);
       }
       if (!act.time || !targets.length) {
-        await send(env, chatId, 'نفهمیدم ساعتِ کدام کار را عوض کنم 🤔\nمثلاً: /time 2 14:30');
+        await send(env, chatId, 'نفهمیدم ساعتِ کدام کار را عوض کنم 🤔\n دنبال چی بگردم؟ مثلاً: «دنبال کار دکتر بگرد»');
         break;
       }
       for (const t of targets) await setTime(env, t.id, act.time);
@@ -680,9 +689,46 @@ async function handleUpdate(env: Env, update: { message?: { chat: { id: number }
       await send(env, chatId, renderSearch(rows, q));
       break;
     }
-    case 'chat':
-      await send(env, chatId, act.reply?.trim() || 'نشد! 🤷');
+    case 'del': {
+      const nums = [...new Set(act.numbers ?? [])].slice(0, 10);
+      if (!tasks.length) {
+      await send(env, chatId, 'امروز کاری ندارم که حذف کنم.');
       break;
+      }
+      if (!nums.length) {
+      await send(env, chatId, 'کدوم کار رو حذف کنم؟ شمارهٔ کار رو بگو، مثلاً «شماره ۲ رو حذف کن».');
+      break;
+      }
+      const bad = nums.filter((n) => n > tasks.length);
+      if (bad.length) {
+      await send(env, chatId, `شمارهٔ ${bad.join('، ')} توی لیست نیست (۱ تا ${tasks.length}). چیزی حذف نشد.`);
+      break;
+      }
+      
+      const targets = nums.map((n) => tasks[n - 1]);
+      if (targets.length > 1) {
+      await askConfirmDelete(env, chatId, targets);
+      break;
+      }
+      await env.DB.prepare('DELETE FROM tasks WHERE id = ?').bind(targets[0].id).run();
+      await send(env, chatId, `🗑 حذف شد:\n• ${targets[0].text}`);
+      break;
+    }
+    case 'delall': {
+      if (!tasks.length) {
+      await send(env, chatId, 'امروز کاری ندارم که حذف کنم.');
+      break;
+      }
+      await askConfirmDelete(env, chatId, tasks);
+      break;
+    }
+    case 'chat':{
+      const reply = act.reply?.trim() || 'نشد! 🤷';
+      await send(env, chatId, reply);
+      await saveTurn(env, text, reply);
+      break;
+    }
+
   }
 }
 
@@ -721,7 +767,7 @@ async function taskReminders(env: Env): Promise<void> {
   const chatId = Number(env.ALLOWED_TELEGRAM_ID);
   for (const t of due) {
     const idx = all.findIndex((x) => x.id === t.id);
-    const tip = idx >= 0 ? `\nتیک زدن: /done ${idx + 1}` : '';
+    const tip = idx >= 0 ? `\nتیک زدن: بگو «کار ${idx + 1} انجام شد»` : '';
     await send(env, chatId, `⏰ وقتشه! (${t.time})\n${t.text}${tip}`);
   }
 }

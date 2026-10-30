@@ -1,0 +1,7 @@
+-- Migration number: 0003 	 2026-10-30T10:06:20.196Z
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
