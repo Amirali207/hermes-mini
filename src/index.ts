@@ -399,8 +399,29 @@ async function taskText(env: Env, id: number): Promise<string | null> {
   return row?.text ?? null;
 }
 
+const TIME_WORDS = new Set([
+  'ساعت', 'صبح', 'بامداد', 'سحر', 'ظهر', 'بعد', 'از', 'عصر', 'غروب', 'شب', 'و', 'نیم', 'ربع',
+  'بی', 'بدون', 'بیساعت', 'بدونساعت', 'ندارد', 'ندارم', 'ندارن', 'نه', 'نخیر', 'مهم', 'نیست',
+  'فرقی', 'نداره', 'نمیکنه', 'بیخیال', 'رد', 'همه',
+]);
+
+function isTimeOnly(raw: string): boolean {
+  const s = toLatinDigits(raw)
+    .replace(/\u200c/g, '')
+    .replace(/(\d)([^\d\s:٫.])/g, '$1 $2')
+    .replace(/([^\d\s:٫.])(\d)/g, '$1 $2')
+    .replace(/[!؟،.]+(?=\s|$)/g, ' ');
+  const tokens = s.split(/\s+/).filter(Boolean);
+  if (!tokens.length || tokens.length > 6) return false;
+  return tokens.every((t) => /^\d{1,2}([:٫.]\d{2})?$/.test(t) || TIME_WORDS.has(t) || /^-+$/.test(t));
+}
+
 // true یعنی پیام جواب ساعت بود و مصرف شد؛ false یعنی باید عادی پردازش شود
 async function answerPending(env: Env, chatId: number, pending: Pending, text: string): Promise<boolean> {
+  if (!isTimeOnly(text)) {
+  await clearPending(env);
+  return false;
+  }
   const ans = parseTimeAnswer(text);
   if (!ans) {
     await clearPending(env);
@@ -513,6 +534,15 @@ async function saveTurn(env: Env, user: string, reply: string): Promise<void> {
   } catch (e) {
     console.error('save history failed', e);
   }
+}
+
+function mentions(text: string, n: number, t: Task): boolean {
+  const s = normalizeFa(toLatinDigits(text));
+  if (new RegExp(`(^|[^0-9])${n}([^0-9]|$)`).test(s)) return true;
+  return normalizeFa(t.text)
+    .split(/\s+/)
+    .filter((w) => w.length >= 3)
+    .some((w) => s.includes(w));
 }
 // اگر مشکلی پیش بیاید null برمی‌گرداند (و پیام را به‌اشتباه «کار جدید» ثبت نمی‌کنیم)
 async function aiParse(env: Env, text: string, tasks: Task[], history: ChatMsg[]): Promise<AiAction | null> {
@@ -652,6 +682,15 @@ if (confirm) {
         await send(env, chatId, 'کاری که می‌گی رو پیدا نکردم. بگو «چیه کارام» تا لیست رو ببینی');
         break;
       }
+
+      const open = tasks.filter((t) => Boolean(t.done) !== done);
+      const onlyOne = open.length === 1 && targets.length === 1 && targets[0].id === open[0].id;
+      const grounded = targets.length !== 1 || onlyOne || mentions(text, tasks.findIndex((x) => x.id === targets[0].id) + 1, targets[0]);
+      if (!grounded) {
+      await send(env, chatId, `کدوم کار رو؟ شمارهٔ کار یا اسمش رو بگو:\n${renderList(tasks)}`);
+      break;
+      }
+
       const pendingTasks = targets.filter((t) => Boolean(t.done) !== done);
       if (!pendingTasks.length) {
         await send(env, chatId, `ℹ️ از قبل ${done ? 'تیک خورده' : 'بدون تیک'} بود:\n${targets.map((t) => `• ${t.text}`).join('\n')}`);
@@ -706,7 +745,7 @@ if (confirm) {
       }
       
       const targets = nums.map((n) => tasks[n - 1]);
-      if (targets.length > 1) {
+      if (targets.length > 1 || !mentions(text, nums[0], targets[0])) {
       await askConfirmDelete(env, chatId, targets);
       break;
       }
