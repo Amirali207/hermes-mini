@@ -104,6 +104,13 @@ const HISTORY_KEEP = 20;
 const MAX_ADD_AT_ONCE = 10;
 const PENDING_KEY = 'pending_time';
 const CONFIRM_KEY = 'pending_delete';
+const DUP_KEY = 'pending_dup';
+const DUP_TTL_MS = 5 * 60 * 1000;
+
+interface PendingDup {
+  items: NewTask[];
+  at: number;
+}
 const CONFIRM_TTL_MS = 5 * 60 * 1000;
 const PENDING_TTL_MS = 30 * 60 * 1000;
 
@@ -372,6 +379,40 @@ async function clearConfirmDelete(env: Env): Promise<void> {
   await env.DB.prepare('DELETE FROM state WHERE k = ?').bind(CONFIRM_KEY).run();
 }
 
+async function findDuplicate(env: Env, text: string, time: string | null): Promise<boolean> {
+  const norm = normalizeFa(text.trim());
+  const row = await env.DB.prepare(
+    "SELECT id FROM tasks WHERE day = ? AND done = 0 AND REPLACE(REPLACE(text, 'ي', 'ی'), 'ك', 'ک') = ? AND ((time IS NULL AND ? IS NULL) OR time = ?) LIMIT 1",
+  )
+    .bind(tehranDay(), norm, time, time)
+    .first<{ id: number }>();
+  return !!row;
+}
+
+async function getDup(env: Env): Promise<PendingDup | null> {
+  try {
+    const row = await env.DB.prepare('SELECT v FROM state WHERE k = ?').bind(DUP_KEY).first<{ v: string }>();
+    if (!row) return null;
+    const p = JSON.parse(row.v) as PendingDup;
+    if (!Array.isArray(p.items) || !p.items.length || Date.now() - p.at > DUP_TTL_MS) {
+      await clearDup(env);
+      return null;
+    }
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+async function setDup(env: Env, items: NewTask[]): Promise<void> {
+  const value = JSON.stringify({ items: items.slice(0, MAX_ADD_AT_ONCE), at: Date.now() } satisfies PendingDup);
+  await env.DB.prepare('INSERT OR REPLACE INTO state (k, v) VALUES (?, ?)').bind(DUP_KEY, value).run();
+}
+
+async function clearDup(env: Env): Promise<void> {
+  await env.DB.prepare('DELETE FROM state WHERE k = ?').bind(DUP_KEY).run();
+}
+
 function parseYesNo(raw: string): 'yes' | 'no' | null {
   const s = raw.replace(/\u200c/g, ' ').trim();
   if (/^(بله|آره|اره|تایید|تأیید|حتما|حتماً|باشه|yes|y)([\s.!،]|$)/i.test(s)) return 'yes';
@@ -625,6 +666,30 @@ if (confirm) {
   }
   // پیام نامربوط: درخواست حذف لغو می‌شود و پیام عادی پردازش می‌شود
 }
+
+const dup = await getDup(env);
+if (dup) {
+  await clearDup(env);
+  const yn = parseYesNo(text);
+  if (yn === 'yes') {
+    const needTime: { id: number; text: string }[] = [];
+    const lines: string[] = [];
+    for (const it of dup.items) {
+      const id = await addTask(env, it.text, it.time);
+      lines.push(`• ${it.time ? `⏰ ${it.time} — ` : ''}${it.text}`);
+      if (!it.time) needTime.push({ id, text: it.text });
+    } 
+    const intro = `✚ دوباره اضافه شد:\n${lines.join('\n')}`;
+    if (needTime.length) await askTimes(env, chatId, needTime, intro);
+    else await send(env, chatId, intro);
+    return;
+  }
+  if (yn === 'no') {
+    await send(env, chatId, 'باشه، اضافه نشد. کار اول سر جاشه 👌');
+    return;
+  }
+  // پیام نامربوط: سؤال لغو می‌شود و پیام عادی پردازش می‌شود
+}
   // اگر منتظر جواب «ساعتش چنده؟» هستیم
   const pending = await getPending(env);
   if (pending && (await answerPending(env, chatId, pending, text))) return;
@@ -645,15 +710,32 @@ if (confirm) {
       let items = act.tasks ?? [];
       if (!items.length && act.text?.trim()) items = [{ text: act.text.trim(), time: null }];
       if (!items.length) {
-        await send(env, chatId, 'نفهمیدم چه کاری اضافه کنم. بمثلاً بگو «خرید نان».');
+        await send(env, chatId, 'نفهمیدم چه کاری اضافه کنم. مثلاً بگو «خرید نان».');
         break;
       }
       const needTime: { id: number; text: string }[] = [];
       const lines: string[] = [];
+      const dups: NewTask[] = [];
+      const seen = new Set<string>();
       for (const it of items) {
+        const key = `${normalizeFa(it.text.trim())}|${it.time ?? ''}`;
+        if (seen.has(key) || (await findDuplicate(env, it.text, it.time))) {
+          dups.push(it);
+          seen.add(key);
+          continue;
+        }
+        seen.add(key);
         const id = await addTask(env, it.text, it.time);
         lines.push(`• ${it.time ? `⏰ ${it.time} — ` : ''}${it.text}`);
         if (!it.time) needTime.push({ id, text: it.text });
+      }
+      const added = lines.length ? `✚ اضافه شد:\n${lines.join('\n')}\n\n` : '';
+      if (dups.length) {
+        await setDup(env, dups);
+        const dupLines = dups.map((d) => `• ${d.time ? `⏰ ${d.time} — ` : ''}${d.text}`).join('\n');
+        const timeNote = needTime.length ? 'ساعت کارهای جدید رو بعداً بگو، مثلاً «ساعت کار ۲ رو بذار ۸ شب».\n\n' : '';
+        await send(env, chatId, `${added}${timeNote}⚠️ این کار از قبل توی لیست امروز هست:\n${dupLines}\n\nباز هم اضافه بشه؟ «بله» یا «نه»`);
+        break;
       }
       const intro = `✚ اضافه شد:\n${lines.join('\n')}`;
       if (needTime.length) await askTimes(env, chatId, needTime, intro);
