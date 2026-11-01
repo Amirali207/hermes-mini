@@ -5,7 +5,7 @@
   "compatibility_date": "2026-10-01",
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
-    "ALLOWED_TELEGRAM_ID": "6027070498",
+    "ALLOWED_TELEGRAM_ID": "6027070498, 358845666",
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "REMINDER_HOUR": "8"
   },
